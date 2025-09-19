@@ -1,11 +1,12 @@
 """Base agent class and workflow management for AI Scrum Master."""
 
-from typing import Any, Callable, List, Optional, TypeVar, Generic
-from abc import ABC, abstractmethod
 import logging
-from dataclasses import dataclass, field
-from datetime import datetime
 import traceback
+from abc import ABC, abstractmethod
+from collections.abc import Callable
+from dataclasses import dataclass, field
+from datetime import UTC, datetime
+from typing import Any, TypeVar
 
 logger = logging.getLogger(__name__)
 
@@ -18,18 +19,18 @@ class StepResult:
     """Result of a workflow step execution."""
     success: bool
     data: Any
-    error: Optional[Exception] = None
+    error: Exception | None = None
     duration_ms: float = 0.0
-    timestamp: datetime = field(default_factory=datetime.utcnow)
+    timestamp: datetime = field(default_factory=lambda: datetime.now(UTC))
 
 
-class WorkflowStep(Generic[T, R]):
+class WorkflowStep[T, R]:
     """A single step in a workflow pipeline."""
-    
-    def __init__(self, 
+
+    def __init__(self,
                  name: str,
                  func: Callable[[T], R],
-                 error_handler: Optional[Callable[[Exception, T], R]] = None):
+                 error_handler: Callable[[Exception, T], R] | None = None):
         """
         Initialize a workflow step.
         
@@ -41,7 +42,7 @@ class WorkflowStep(Generic[T, R]):
         self.name = name
         self.func = func
         self.error_handler = error_handler
-    
+
     def execute(self, input_data: T) -> StepResult:
         """
         Execute the step with error handling.
@@ -52,27 +53,27 @@ class WorkflowStep(Generic[T, R]):
         Returns:
             StepResult with execution details
         """
-        start_time = datetime.utcnow()
+        start_time = datetime.now(UTC)
         try:
             result = self.func(input_data)
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
+            duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+
             logger.info(f"Step '{self.name}' completed successfully",
                        extra={"duration_ms": duration_ms})
-            
+
             return StepResult(
                 success=True,
                 data=result,
                 duration_ms=duration_ms
             )
         except Exception as e:
-            duration_ms = (datetime.utcnow() - start_time).total_seconds() * 1000
-            
+            duration_ms = (datetime.now(UTC) - start_time).total_seconds() * 1000
+
             logger.error(f"Step '{self.name}' failed: {str(e)}",
-                        extra={"duration_ms": duration_ms, 
+                        extra={"duration_ms": duration_ms,
                               "error": str(e),
                               "traceback": traceback.format_exc()})
-            
+
             if self.error_handler:
                 try:
                     fallback_result = self.error_handler(e, input_data)
@@ -90,7 +91,7 @@ class WorkflowStep(Generic[T, R]):
                         error=handler_error,
                         duration_ms=duration_ms
                     )
-            
+
             return StepResult(
                 success=False,
                 data=None,
@@ -101,17 +102,17 @@ class WorkflowStep(Generic[T, R]):
 
 class Workflow:
     """Manages a sequence of processing steps."""
-    
+
     def __init__(self, name: str = "Workflow"):
         """Initialize an empty workflow."""
         self.name = name
-        self.steps: List[WorkflowStep] = []
-        self.execution_history: List[StepResult] = []
-    
-    def add_step(self, 
+        self.steps: list[WorkflowStep] = []
+        self.execution_history: list[StepResult] = []
+
+    def add_step(self,
                  step: Callable,
-                 name: Optional[str] = None,
-                 error_handler: Optional[Callable] = None) -> 'Workflow':
+                 name: str | None = None,
+                 error_handler: Callable | None = None) -> 'Workflow':
         """
         Add a step to the workflow.
         
@@ -127,7 +128,7 @@ class Workflow:
         workflow_step = WorkflowStep(step_name, step, error_handler)
         self.steps.append(workflow_step)
         return self
-    
+
     def execute(self, initial_input: Any) -> Any:
         """
         Execute the workflow on given input.
@@ -142,34 +143,34 @@ class Workflow:
             Exception: If any step fails without error handler
         """
         logger.info(f"Starting workflow '{self.name}' with {len(self.steps)} steps")
-        
+
         self.execution_history.clear()
         result = initial_input
-        
+
         for i, step in enumerate(self.steps, 1):
             logger.info(f"Executing step {i}/{len(self.steps)}: {step.name}")
-            
+
             step_result = step.execute(result)
             self.execution_history.append(step_result)
-            
+
             if not step_result.success and step_result.data is None:
                 # Step failed with no fallback
                 logger.error(f"Workflow '{self.name}' failed at step '{step.name}'")
                 raise step_result.error or Exception(f"Step '{step.name}' failed")
-            
+
             result = step_result.data
-            
+
         logger.info(f"Workflow '{self.name}' completed successfully")
         return result
-    
+
     def get_execution_summary(self) -> dict:
         """Get summary of the last execution."""
         if not self.execution_history:
             return {"status": "not_executed"}
-        
+
         total_duration = sum(step.duration_ms for step in self.execution_history)
         failed_steps = [step for step in self.execution_history if not step.success]
-        
+
         return {
             "status": "failed" if failed_steps else "success",
             "total_duration_ms": total_duration,
@@ -181,7 +182,7 @@ class Workflow:
 
 class BaseAgent(ABC):
     """Base agent class for AI Scrum Master agents."""
-    
+
     def __init__(self, name: str, **kwargs):
         """
         Initialize base agent.
@@ -194,19 +195,19 @@ class BaseAgent(ABC):
         self._workflow = Workflow(name=f"{name}_workflow")
         self.config = kwargs
         self.logger = logging.getLogger(f"{__name__}.{name}")
-        
+
         # Initialize the agent
         self._initialize()
-        
+
     @abstractmethod
     def _initialize(self):
         """Initialize agent-specific components."""
         pass
-    
-    def add_step(self, 
+
+    def add_step(self,
                  step: Callable,
-                 name: Optional[str] = None,
-                 error_handler: Optional[Callable] = None) -> 'BaseAgent':
+                 name: str | None = None,
+                 error_handler: Callable | None = None) -> 'BaseAgent':
         """
         Add a step to the agent's workflow.
         
@@ -220,7 +221,7 @@ class BaseAgent(ABC):
         """
         self._workflow.add_step(step, name, error_handler)
         return self
-    
+
     def execute(self, task: Any) -> Any:
         """
         Execute the agent's workflow.
@@ -232,22 +233,22 @@ class BaseAgent(ABC):
             Processed result
         """
         self.logger.info(f"Agent '{self.name}' starting execution")
-        
+
         try:
             result = self._workflow.execute(task)
-            
+
             # Log execution summary
             summary = self._workflow.get_execution_summary()
-            self.logger.info(f"Agent '{self.name}' execution completed", 
+            self.logger.info(f"Agent '{self.name}' execution completed",
                            extra={"summary": summary})
-            
+
             return result
-            
+
         except Exception as e:
-            self.logger.error(f"Agent '{self.name}' execution failed: {str(e)}", 
+            self.logger.error(f"Agent '{self.name}' execution failed: {str(e)}",
                             exc_info=True)
             raise
-    
+
     def get_info(self) -> dict:
         """Get agent information."""
         return {
@@ -259,9 +260,9 @@ class BaseAgent(ABC):
 
 class AgentRegistry:
     """Registry for agent discovery and management."""
-    
+
     _agents = {}
-    
+
     @classmethod
     def register(cls, agent_class: type) -> type:
         """
@@ -276,9 +277,9 @@ class AgentRegistry:
         cls._agents[agent_class.__name__] = agent_class
         logger.info(f"Registered agent: {agent_class.__name__}")
         return agent_class
-    
+
     @classmethod
-    def get_agent(cls, name: str) -> Optional[type]:
+    def get_agent(cls, name: str) -> type | None:
         """
         Get registered agent class by name.
         
@@ -289,14 +290,14 @@ class AgentRegistry:
             Agent class or None
         """
         return cls._agents.get(name)
-    
+
     @classmethod
-    def list_agents(cls) -> List[str]:
+    def list_agents(cls) -> list[str]:
         """List all registered agent names."""
         return list(cls._agents.keys())
-    
+
     @classmethod
-    def create_agent(cls, name: str, **kwargs) -> Optional[BaseAgent]:
+    def create_agent(cls, name: str, **kwargs) -> BaseAgent | None:
         """
         Create an instance of a registered agent.
         

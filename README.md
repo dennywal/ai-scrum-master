@@ -4,7 +4,7 @@ An intelligent task creation and management system that converts TDD/PRD documen
 
 ## Overview
 
-AI Scrum Master automates the process of converting Test-Driven Development (TDD) documents and Product Requirements Documents (PRD) into well-structured, prioritized GitHub issues. It leverages Large Language Models (LLMs) to enhance task extraction, generate comprehensive issue descriptions, and manage dependencies between tasks.
+AI Scrum Master automates the process of converting Technical Design Documents (TDD) and Product Requirements Documents (PRD) into well-structured, prioritized GitHub issues. It leverages Large Language Models (LLMs) to enhance task extraction, generate comprehensive issue descriptions, and manage dependencies between tasks.
 
 ## Features
 
@@ -20,7 +20,7 @@ AI Scrum Master automates the process of converting Test-Driven Development (TDD
 
 ### Prerequisites
 
-- Python 3.8+
+- Python 3.13+
 - GitHub account with personal access token
 - OpenAI API key (or compatible LLM provider)
 

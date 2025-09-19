@@ -1,16 +1,16 @@
 """Custom exceptions for AI Scrum Master."""
 
-from typing import Optional, Dict, Any
+from typing import Any
 
 
 class AIScrumMasterError(Exception):
     """Base exception for AI Scrum Master."""
-    
-    def __init__(self, message: str, details: Optional[Dict[str, Any]] = None):
+
+    def __init__(self, message: str, details: dict[str, Any] | None = None):
         super().__init__(message)
         self.message = message
         self.details = details or {}
-    
+
     def __str__(self):
         if self.details:
             return f"{self.message} - Details: {self.details}"
@@ -20,7 +20,7 @@ class AIScrumMasterError(Exception):
 # Configuration Errors
 class ConfigurationError(AIScrumMasterError):
     """Raised when configuration is invalid or missing."""
-    
+
     def __init__(self, config_item: str, reason: str):
         super().__init__(
             f"Configuration error for '{config_item}': {reason}",
@@ -31,7 +31,7 @@ class ConfigurationError(AIScrumMasterError):
 # Validation Errors
 class ValidationError(AIScrumMasterError):
     """Raised when input validation fails."""
-    
+
     def __init__(self, field: str, reason: str, value: Any = None):
         super().__init__(
             f"Validation failed for field '{field}': {reason}",
@@ -42,7 +42,7 @@ class ValidationError(AIScrumMasterError):
 # Document Processing Errors
 class DocumentParsingError(AIScrumMasterError):
     """Raised when document parsing fails."""
-    
+
     def __init__(self, document_type: str, reason: str):
         super().__init__(
             f"Failed to parse {document_type} document: {reason}",
@@ -52,7 +52,7 @@ class DocumentParsingError(AIScrumMasterError):
 
 class TaskExtractionError(AIScrumMasterError):
     """Raised when task extraction fails."""
-    
+
     def __init__(self, source: str, reason: str):
         super().__init__(
             f"Failed to extract tasks from {source}: {reason}",
@@ -68,7 +68,7 @@ class LLMError(AIScrumMasterError):
 
 class LLMConnectionError(LLMError):
     """Raised when connection to LLM service fails."""
-    
+
     def __init__(self, service: str, original_error: Exception):
         super().__init__(
             f"Failed to connect to {service}",
@@ -78,8 +78,8 @@ class LLMConnectionError(LLMError):
 
 class LLMRateLimitError(LLMError):
     """Raised when LLM rate limit is exceeded."""
-    
-    def __init__(self, retry_after: Optional[int] = None):
+
+    def __init__(self, retry_after: int | None = None):
         message = "LLM rate limit exceeded"
         if retry_after:
             message += f". Retry after {retry_after} seconds"
@@ -88,7 +88,7 @@ class LLMRateLimitError(LLMError):
 
 class LLMResponseError(LLMError):
     """Raised when LLM response is invalid."""
-    
+
     def __init__(self, reason: str, response: Any = None):
         super().__init__(
             f"Invalid LLM response: {reason}",
@@ -96,7 +96,7 @@ class LLMResponseError(LLMError):
         )
 
 
-# GitHub Errors  
+# GitHub Errors
 class GitHubError(AIScrumMasterError):
     """Base class for GitHub-related errors."""
     pass
@@ -104,7 +104,7 @@ class GitHubError(AIScrumMasterError):
 
 class GitHubAuthenticationError(GitHubError):
     """Raised when GitHub authentication fails."""
-    
+
     def __init__(self):
         super().__init__(
             "GitHub authentication failed. Please check your token.",
@@ -114,7 +114,7 @@ class GitHubAuthenticationError(GitHubError):
 
 class GitHubRepositoryError(GitHubError):
     """Raised when repository operation fails."""
-    
+
     def __init__(self, repo: str, reason: str):
         super().__init__(
             f"Repository operation failed for {repo}: {reason}",
@@ -124,7 +124,7 @@ class GitHubRepositoryError(GitHubError):
 
 class GitHubPermissionError(GitHubError):
     """Raised when lacking GitHub permissions."""
-    
+
     def __init__(self, repo: str, operation: str):
         super().__init__(
             f"Insufficient permissions for {operation} on {repo}",
@@ -134,8 +134,8 @@ class GitHubPermissionError(GitHubError):
 
 class GitHubRateLimitError(GitHubError):
     """Raised when GitHub rate limit is exceeded."""
-    
-    def __init__(self, reset_time: Optional[int] = None):
+
+    def __init__(self, reset_time: int | None = None):
         message = "GitHub rate limit exceeded"
         if reset_time:
             from datetime import datetime
@@ -146,7 +146,7 @@ class GitHubRateLimitError(GitHubError):
 
 class GitHubBatchCreationError(GitHubError):
     """Raised when batch issue creation partially fails."""
-    
+
     def __init__(self, created: int, failed: int, errors: list):
         super().__init__(
             f"Batch creation partially failed: {created} created, {failed} failed",
@@ -157,8 +157,8 @@ class GitHubBatchCreationError(GitHubError):
 # Task Processing Errors
 class DependencyError(AIScrumMasterError):
     """Raised when task dependency issues occur."""
-    
-    def __init__(self, reason: str, tasks: Optional[list] = None):
+
+    def __init__(self, reason: str, tasks: list | None = None):
         super().__init__(
             f"Dependency error: {reason}",
             {"reason": reason, "tasks": tasks}
@@ -167,10 +167,10 @@ class DependencyError(AIScrumMasterError):
 
 class CircularDependencyError(DependencyError):
     """Raised when circular dependencies are detected."""
-    
+
     def __init__(self, cycle: list):
         super().__init__(
-            f"Circular dependency detected",
+            "Circular dependency detected",
             cycle
         )
 
@@ -184,7 +184,7 @@ class IssueGenerationError(AIScrumMasterError):
 # Retry Errors
 class RetryExhaustedError(AIScrumMasterError):
     """Raised when all retry attempts are exhausted."""
-    
+
     def __init__(self, operation: str, attempts: int, last_error: Exception):
         super().__init__(
             f"All {attempts} retry attempts failed for {operation}",
