@@ -14,9 +14,9 @@ class LLMSettings(BaseSettings):
     """LLM configuration settings."""
 
     openai_api_key: SecretStr = Field(..., env="OPENAI_API_KEY")
-    model_name: str = Field("gpt-4", env="LLM_MODEL_NAME")
+    model_name: str = Field("gpt-5", env="LLM_MODEL_NAME")
     temperature: float = Field(0.5, env="LLM_TEMPERATURE", ge=0.0, le=2.0)
-    max_tokens: int = Field(2000, env="LLM_MAX_TOKENS", ge=1, le=8000)
+    max_tokens: int = Field(4000, env="LLM_MAX_TOKENS", ge=1, le=256000)  # GPT-5 supports up to 256k
 
     class Config:
         env_prefix = "LLM_"
