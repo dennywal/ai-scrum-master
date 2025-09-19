@@ -22,6 +22,17 @@ class LLMProvider(str, Enum):
     ANTHROPIC = "anthropic"
 
 
+class ModelVariant(str, Enum):
+    """Model size variants available in 2025."""
+    # OpenAI GPT-5 variants
+    GPT5 = "gpt-5"
+    GPT5_MINI = "gpt-5-mini"
+    GPT5_NANO = "gpt-5-nano"
+    # Anthropic Claude 4 variants  
+    CLAUDE_OPUS_4_1 = "claude-opus-4.1"
+    CLAUDE_SONNET_4 = "claude-sonnet-4"
+
+
 class LLMClient:
     """Client for interacting with LLM APIs."""
 
@@ -52,10 +63,10 @@ class LLMClient:
         # Initialize provider client
         if provider == LLMProvider.OPENAI:
             self.client = OpenAI(api_key=api_key)
-            self.model = model or "gpt-4-turbo-preview"
+            self.model = model or "gpt-5"
         elif provider == LLMProvider.ANTHROPIC:
             self.client = Anthropic(api_key=api_key)
-            self.model = model or "claude-3-opus-20240229"
+            self.model = model or "claude-opus-4.1"
         else:
             raise ValueError(f"Unsupported provider: {provider}")
 
@@ -91,12 +102,23 @@ class LLMClient:
                     messages.append({"role": "system", "content": system_prompt})
                 messages.append({"role": "user", "content": prompt})
                 
-                response = self.client.chat.completions.create(
-                    model=self.model,
-                    messages=messages,
-                    temperature=temperature,
-                    max_tokens=max_tokens
-                )
+                # Use Responses API for GPT-5 models (new in 2025)
+                if "gpt-5" in self.model and hasattr(self.client, 'responses'):
+                    response = self.client.responses.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format={"type": "text"}
+                    )
+                else:
+                    # Fallback to Chat Completions API for compatibility
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens
+                    )
                 return response.choices[0].message.content
                 
             elif self.provider == LLMProvider.ANTHROPIC:
@@ -124,7 +146,7 @@ class LLMClient:
                                         prompt: str,
                                         schema: dict[str, Any],
                                         system_prompt: str | None = None) -> dict[str, Any]:
-        """Generate structured JSON output.
+        """Generate structured JSON output using latest API features.
         
         Args:
             prompt: User prompt
@@ -137,18 +159,47 @@ class LLMClient:
         Raises:
             LLMResponseError: If response is not valid JSON
         """
-        json_prompt = f"{prompt}\n\nRespond with valid JSON matching this schema:\n{json.dumps(schema, indent=2)}"
-        
-        response = await self.generate_completion(
-            prompt=json_prompt,
-            system_prompt=system_prompt or "You are a helpful assistant that always responds with valid JSON.",
-            temperature=0.3  # Lower temperature for structured output
-        )
-        
         try:
-            return json.loads(response)
+            if self.provider == LLMProvider.OPENAI:
+                # Use OpenAI's structured output with response_format
+                messages = []
+                if system_prompt:
+                    messages.append({"role": "system", "content": system_prompt})
+                messages.append({"role": "user", "content": prompt})
+                
+                # Use Responses API for GPT-5 with structured output
+                if "gpt-5" in self.model and hasattr(self.client, 'responses'):
+                    response = self.client.responses.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.3,  # Lower temperature for structured output
+                        response_format={"type": "json_schema", "json_schema": schema}  # Direct schema validation
+                    )
+                else:
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=0.3,
+                        response_format={"type": "json_object"}
+                    )
+                
+                return json.loads(response.choices[0].message.content)
+            else:
+                # Fallback for other providers
+                json_prompt = f"{prompt}\n\nRespond with valid JSON matching this schema:\n{json.dumps(schema, indent=2)}"
+                
+                response = await self.generate_completion(
+                    prompt=json_prompt,
+                    system_prompt=system_prompt or "You are a helpful assistant that always responds with valid JSON.",
+                    temperature=0.3
+                )
+                
+                return json.loads(response)
+                
         except json.JSONDecodeError as e:
-            raise LLMResponseError(f"Invalid JSON response: {str(e)}", response) from e
+            raise LLMResponseError(f"Invalid JSON response: {str(e)}") from e
+        except Exception as e:
+            raise LLMResponseError(f"Failed to generate structured output: {str(e)}") from e
 
     async def batch_generate(self, prompts: list[str]) -> list[str]:
         """Generate completions for multiple prompts.
@@ -223,18 +274,22 @@ class LLMClient:
             raise NotImplementedError("Function calling only supported for OpenAI")
         
         try:
+            # Using the new tools API instead of deprecated functions API
+            tools = [{"type": "function", "function": func} for func in functions]
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[{"role": "user", "content": prompt}],
-                functions=functions,
-                function_call="auto"
+                tools=tools,
+                tool_choice="auto"
             )
             
             message = response.choices[0].message
-            if message.function_call:
+            if message.tool_calls:
+                # Handle new tool calls format
+                tool_call = message.tool_calls[0]
                 return {
-                    "function_name": message.function_call.name,
-                    "arguments": json.loads(message.function_call.arguments)
+                    "function_name": tool_call.function.name,
+                    "arguments": json.loads(tool_call.function.arguments)
                 }
             else:
                 return {
@@ -271,9 +326,23 @@ class LLMClient:
         
         # Add provider-specific info
         if self.provider == LLMProvider.OPENAI:
-            info["max_tokens"] = 128000 if "gpt-4" in self.model else 16384
+            # Updated token limits for newer models
+            if "gpt-4o" in self.model:
+                info["max_tokens"] = 128000
+            elif "gpt-4" in self.model:
+                info["max_tokens"] = 128000
+            elif "gpt-3.5" in self.model:
+                info["max_tokens"] = 16384
+            else:
+                info["max_tokens"] = 128000  # Default for newer models
         elif self.provider == LLMProvider.ANTHROPIC:
-            info["max_tokens"] = 200000 if "claude-3" in self.model else 100000
+            # Updated token limits for Claude models
+            if "claude-3-5" in self.model or "claude-3-opus" in self.model:
+                info["max_tokens"] = 200000
+            elif "claude-3" in self.model:
+                info["max_tokens"] = 200000
+            else:
+                info["max_tokens"] = 200000  # Default for newer Claude models
         
         return info
 

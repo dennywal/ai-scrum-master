@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch, MagicMock, AsyncMock
 import pytest
 import json
 
-from src.integrations.llm_client import LLMClient, LLMProvider
+from src.integrations.llm_client import LLMClient, LLMProvider, ModelVariant
 from src.core.exceptions import LLMConnectionError, LLMResponseError, LLMRateLimitError
 
 
@@ -23,6 +23,7 @@ class TestLLMClient:
         
         assert client.provider == LLMProvider.OPENAI
         assert client.api_key == self.openai_key
+        assert client.model == "gpt-5"  # Check default GPT-5 model
         mock_openai.assert_called_once_with(api_key=self.openai_key)
 
     @patch('src.integrations.llm_client.Anthropic')
@@ -32,6 +33,7 @@ class TestLLMClient:
         
         assert client.provider == LLMProvider.ANTHROPIC
         assert client.api_key == self.anthropic_key
+        assert client.model == "claude-opus-4.1"  # Check default Claude 4 model
         mock_anthropic.assert_called_once_with(api_key=self.anthropic_key)
 
     def test_initialization_without_api_key_raises_error(self):
@@ -82,7 +84,7 @@ class TestLLMClient:
     @patch('src.integrations.llm_client.OpenAI')
     @pytest.mark.asyncio
     async def test_generate_structured_output(self, mock_openai):
-        """Test generating structured JSON output."""
+        """Test generating structured JSON output with response_format."""
         mock_client = Mock()
         mock_response = Mock()
         structured_data = {"tasks": ["task1", "task2"], "priority": "high"}
@@ -98,6 +100,9 @@ class TestLLMClient:
 
         assert response == structured_data
         assert "tasks" in response
+        # Verify response_format is used
+        call_args = mock_client.chat.completions.create.call_args
+        assert call_args.kwargs.get('response_format') == {"type": "json_object"}
         assert len(response["tasks"]) == 2
 
     @patch('src.integrations.llm_client.OpenAI')
@@ -234,10 +239,86 @@ class TestLLMClient:
         assert "".join(chunks) == "Hello world!"
 
     @patch('src.integrations.llm_client.OpenAI')
+    @pytest.mark.asyncio
+    async def test_generate_with_functions_tools_api(self, mock_openai):
+        """Test function calling with new tools API."""
+        mock_client = Mock()
+        mock_response = Mock()
+        tool_call = Mock()
+        tool_call.function.name = "extract_tasks"
+        tool_call.function.arguments = json.dumps({"tasks": ["task1", "task2"]})
+        mock_response.choices = [Mock(message=Mock(tool_calls=[tool_call], content=None))]
+        mock_client.chat.completions.create.return_value = mock_response
+        mock_openai.return_value = mock_client
+
+        client = LLMClient(provider=LLMProvider.OPENAI, api_key=self.openai_key)
+        
+        functions = [{
+            "name": "extract_tasks",
+            "description": "Extract tasks from text",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tasks": {"type": "array", "items": {"type": "string"}}
+                }
+            }
+        }]
+        
+        result = await client.generate_with_functions("Extract tasks from this text", functions)
+        
+        assert result["function_name"] == "extract_tasks"
+        assert result["arguments"]["tasks"] == ["task1", "task2"]
+        
+        # Verify tools API is used instead of deprecated functions API
+        call_args = mock_client.chat.completions.create.call_args
+        assert "tools" in call_args.kwargs
+        assert call_args.kwargs["tool_choice"] == "auto"
+
+    @patch('src.integrations.llm_client.OpenAI')
+    @pytest.mark.asyncio
+    async def test_responses_api_for_gpt5(self, mock_openai):
+        """Test that GPT-5 uses Responses API when available."""
+        mock_client = Mock()
+        mock_responses = Mock()
+        mock_client.responses = mock_responses
+        
+        mock_response = Mock()
+        mock_response.choices = [Mock(message=Mock(content="Response from Responses API"))]
+        mock_responses.create.return_value = mock_response
+        mock_openai.return_value = mock_client
+
+        client = LLMClient(provider=LLMProvider.OPENAI, api_key=self.openai_key, model="gpt-5")
+        
+        response = await client.generate_completion("Test prompt")
+        
+        assert response == "Response from Responses API"
+        # Verify Responses API was called, not Chat Completions
+        mock_responses.create.assert_called_once()
+        mock_client.chat.completions.create.assert_not_called()
+
+    @patch('src.integrations.llm_client.OpenAI')
+    @pytest.mark.asyncio
+    async def test_model_variants(self, mock_openai):
+        """Test different model variants."""
+        mock_client = Mock()
+        mock_openai.return_value = mock_client
+        
+        # Test GPT-5 variants
+        for variant in [ModelVariant.GPT5, ModelVariant.GPT5_MINI, ModelVariant.GPT5_NANO]:
+            client = LLMClient(provider=LLMProvider.OPENAI, api_key=self.openai_key, model=variant.value)
+            assert client.model == variant.value
+        
+        # Test Claude variants
+        for variant in [ModelVariant.CLAUDE_OPUS_4_1, ModelVariant.CLAUDE_SONNET_4]:
+            with patch('src.integrations.llm_client.Anthropic'):
+                client = LLMClient(provider=LLMProvider.ANTHROPIC, api_key=self.anthropic_key, model=variant.value)
+                assert client.model == variant.value
+
+    @patch('src.integrations.llm_client.OpenAI')
     def test_validate_api_key(self, mock_openai):
         """Test API key validation."""
         mock_client = Mock()
-        mock_client.models.list.return_value = [Mock(id="gpt-4")]
+        mock_client.models.list.return_value = [Mock(id="gpt-5")]
         mock_openai.return_value = mock_client
 
         client = LLMClient(provider=LLMProvider.OPENAI, api_key=self.openai_key)
@@ -247,35 +328,3 @@ class TestLLMClient:
         assert is_valid is True
         mock_client.models.list.assert_called_once()
 
-    @patch('src.integrations.llm_client.OpenAI')
-    @pytest.mark.asyncio
-    async def test_function_calling(self, mock_openai):
-        """Test function calling capability."""
-        mock_client = Mock()
-        mock_response = Mock()
-        mock_response.choices = [Mock(
-            message=Mock(
-                content=None,
-                function_call=Mock(
-                    name="extract_tasks",
-                    arguments='{"tasks": ["task1", "task2"]}'
-                )
-            )
-        )]
-        mock_client.chat.completions.create.return_value = mock_response
-        mock_openai.return_value = mock_client
-
-        client = LLMClient(provider=LLMProvider.OPENAI, api_key=self.openai_key)
-        
-        functions = [{
-            "name": "extract_tasks",
-            "parameters": {"type": "object"}
-        }]
-        
-        result = await client.generate_with_functions(
-            prompt="Extract tasks",
-            functions=functions
-        )
-        
-        assert result["function_name"] == "extract_tasks"
-        assert "tasks" in result["arguments"]
