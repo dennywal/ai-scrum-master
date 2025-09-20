@@ -2,7 +2,7 @@
 
 from datetime import UTC, datetime
 from enum import Enum
-from typing import Any
+from typing import Any, List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -235,3 +235,122 @@ class TaskBatch(BaseModel):
         for task in self.tasks:
             grouped[task.task_type].append(task)
         return grouped
+
+
+# Structured output models for LLM task extraction
+class TaskExtractionItem(BaseModel):
+    """Individual task item for LLM structured extraction."""
+    
+    title: str = Field(
+        ...,
+        min_length=3,
+        max_length=200,
+        description="Brief, descriptive task title"
+    )
+    
+    description: str = Field(
+        ...,
+        min_length=10,
+        description="Detailed task description"
+    )
+    
+    task_type: str = Field(
+        default="feature",
+        pattern="^(feature|bug|test|documentation|refactor|research|infrastructure)$",
+        description="Type of task"
+    )
+    
+    priority: str = Field(
+        default="medium",
+        pattern="^(critical|high|medium|low)$",
+        description="Task priority level"
+    )
+    
+    dependencies: List[str] = Field(
+        default_factory=list,
+        description="List of task titles this task depends on"
+    )
+    
+    acceptance_criteria: List[str] = Field(
+        default_factory=list,
+        description="Testable acceptance criteria"
+    )
+    
+    technical_requirements: List[str] = Field(
+        default_factory=list,
+        description="Technical requirements or constraints"
+    )
+    
+    estimated_effort: Optional[str] = Field(
+        None,
+        pattern="^(small|medium|large|extra_large)$",
+        description="Estimated effort size"
+    )
+    
+    labels: List[str] = Field(
+        default_factory=list,
+        description="Task labels for categorization"
+    )
+    
+    def to_extracted_task(self, source_document: str | None = None) -> ExtractedTask:
+        """Convert to ExtractedTask model."""
+        return ExtractedTask(
+            title=self.title,
+            description=self.description,
+            task_type=TaskType(self.task_type),
+            priority=Priority(self.priority),
+            dependencies=self.dependencies,
+            acceptance_criteria=self.acceptance_criteria,
+            technical_requirements=self.technical_requirements,
+            estimated_effort=EffortSize(self.estimated_effort) if self.estimated_effort else None,
+            labels=self.labels,
+            source_document=source_document
+        )
+
+
+class TaskExtractionOutput(BaseModel):
+    """Structured output for LLM task extraction."""
+    
+    tasks: List[TaskExtractionItem] = Field(
+        ...,
+        min_items=1,
+        description="List of extracted tasks"
+    )
+    
+    summary: Optional[str] = Field(
+        None,
+        description="Summary of the extraction process"
+    )
+    
+    total_estimated_effort: Optional[float] = Field(
+        None,
+        ge=0,
+        description="Total estimated effort in hours"
+    )
+    
+    @field_validator('tasks')
+    @classmethod
+    def validate_unique_titles(cls, v):
+        """Ensure task titles are unique."""
+        titles = [task.title for task in v]
+        if len(titles) != len(set(titles)):
+            # Make titles unique by appending numbers
+            seen = {}
+            for task in v:
+                if task.title in seen:
+                    seen[task.title] += 1
+                    task.title = f"{task.title} ({seen[task.title]})"
+                else:
+                    seen[task.title] = 1
+        return v
+    
+    def to_task_batch(self, source: str) -> TaskBatch:
+        """Convert to TaskBatch for processing."""
+        extracted_tasks = [
+            task.to_extracted_task(source_document=source)
+            for task in self.tasks
+        ]
+        return TaskBatch(
+            tasks=extracted_tasks,
+            source=source
+        )

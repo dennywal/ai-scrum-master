@@ -3,17 +3,21 @@
 import json
 import logging
 from enum import Enum
-from typing import Any, AsyncIterator
+from typing import Any, AsyncIterator, Type, TypeVar
 import asyncio
 
 from openai import OpenAI
 from anthropic import Anthropic
 from tenacity import retry, stop_after_attempt, wait_exponential
+from pydantic import BaseModel
 
 from src.core.exceptions import LLMConnectionError, LLMResponseError, LLMRateLimitError
 
 
 logger = logging.getLogger(__name__)
+
+# Type variable for Pydantic models
+T = TypeVar('T', bound=BaseModel)
 
 
 class LLMProvider(str, Enum):
@@ -102,24 +106,36 @@ class LLMClient:
                     messages.append({"role": "system", "content": system_prompt})
                 messages.append({"role": "user", "content": prompt})
                 
-                # Use Responses API for GPT-5 models (new in 2025)
-                if "gpt-5" in self.model and hasattr(self.client, 'responses'):
-                    response = self.client.responses.create(
-                        model=self.model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format={"type": "text"}
-                    )
-                else:
-                    # Fallback to Chat Completions API for compatibility
+                # Always use Chat Completions API
+                # Use max_completion_tokens for newer models, max_tokens for older ones
+                try:
+                    # Try with max_completion_tokens first (for newer models)
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=max_tokens
+                        max_completion_tokens=max_tokens,
+                        response_format={"type": "text"}  # Ensure text response
                     )
-                return response.choices[0].message.content
+                except Exception as e:
+                    if "max_completion_tokens" in str(e) or "unsupported_parameter" in str(e):
+                        # Fallback to max_tokens for older models
+                        response = self.client.chat.completions.create(
+                            model=self.model,
+                            messages=messages,
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                    else:
+                        raise
+                
+                # Extract content and handle None/empty responses
+                content = response.choices[0].message.content if response.choices else None
+                if not content:
+                    logger.warning(f"Empty response from LLM for prompt: {prompt[:100]}...")
+                    raise LLMResponseError("LLM returned empty response")
+                    
+                return content
                 
             elif self.provider == LLMProvider.ANTHROPIC:
                 kwargs = {
@@ -200,6 +216,164 @@ class LLMClient:
             raise LLMResponseError(f"Invalid JSON response: {str(e)}") from e
         except Exception as e:
             raise LLMResponseError(f"Failed to generate structured output: {str(e)}") from e
+
+    async def generate_pydantic_output(self,
+                                      prompt: str,
+                                      response_model: Type[T],
+                                      system_prompt: str | None = None,
+                                      temperature: float = 0.7,
+                                      max_tokens: int = 2000) -> T:
+        """Generate structured output using Pydantic models with OpenAI Responses API.
+        
+        Uses the new Responses API for GPT-5 models when available, with fallback
+        to structured output for GPT-4 models.
+        
+        Args:
+            prompt: User prompt
+            response_model: Pydantic model class for response structure
+            system_prompt: System prompt (optional)
+            temperature: Sampling temperature
+            max_tokens: Maximum tokens to generate
+            
+        Returns:
+            Instance of the Pydantic model with generated data
+            
+        Raises:
+            LLMResponseError: If response parsing fails
+            
+        Example:
+            >>> client = LLMClient(provider=LLMProvider.OPENAI, api_key="...")
+            >>> result = await client.generate_pydantic_output(
+            ...     prompt="Create an issue for adding dark mode",
+            ...     response_model=IssueGenerationOutput
+            ... )
+            >>> print(result.title)  # "Add dark mode support"
+        """
+        try:
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": prompt})
+            
+            if self.provider == LLMProvider.OPENAI:
+                # Check if we can use the Responses API with parse method for GPT-5
+                if "gpt-5" in self.model and hasattr(self.client, 'responses'):
+                    try:
+                        # Use the new Responses API parse method
+                        self.logger.debug(
+                            f"Using Responses API with model {self.model}",
+                            extra={
+                                "model": self.model,
+                                "response_model": response_model.__name__,
+                                "prompt_length": len(prompt)
+                            }
+                        )
+                        
+                        response = self.client.responses.parse(
+                            model=self.model,
+                            input=messages,  # Note: using 'input' instead of 'messages'
+                            text_format=response_model,  # Pass the Pydantic model directly
+                            temperature=temperature,
+                            max_tokens=max_tokens
+                        )
+                        
+                        # The response should have an output_parsed attribute
+                        if hasattr(response, 'output_parsed'):
+                            self.logger.debug("Successfully used Responses API")
+                            return response.output_parsed
+                        else:
+                            # Fallback to manual parsing if needed
+                            self.logger.debug("Responses API lacks output_parsed, using direct output")
+                            return response_model.model_validate(response.output)
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Responses API parse failed: {e}, falling back to standard method",
+                            extra={"error": str(e), "model": self.model}
+                        )
+                        # Fall through to standard method
+                
+                # Fallback to standard structured output with JSON schema
+                # Generate JSON schema from Pydantic model
+                schema = response_model.model_json_schema()
+                
+                # Check if model supports structured output with JSON schema
+                supports_json_schema = any(
+                    model_prefix in self.model 
+                    for model_prefix in ["gpt-4o", "gpt-4-turbo", "gpt-4-0125", "gpt-3.5-turbo-0125"]
+                )
+                
+                if supports_json_schema:
+                    # Models that support structured output with JSON schema
+                    self.logger.debug(f"Using JSON schema structured output for {self.model}")
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format={
+                            "type": "json_schema",
+                            "json_schema": {
+                                "name": response_model.__name__,
+                                "schema": schema,
+                                "strict": True
+                            }
+                        }
+                    )
+                else:
+                    # Older models - use JSON mode with schema in prompt
+                    self.logger.debug(f"Using JSON mode with schema in prompt for {self.model}")
+                    
+                    # Add schema to the prompt for better compliance
+                    schema_prompt = (
+                        f"You must respond with valid JSON that matches this Pydantic model schema:\n"
+                        f"{json.dumps(schema, indent=2)}\n\n"
+                        f"Ensure all required fields are present and properly typed."
+                    )
+                    messages.append({"role": "system", "content": schema_prompt})
+                    
+                    response = self.client.chat.completions.create(
+                        model=self.model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        response_format={"type": "json_object"}
+                    )
+                
+                # Parse the JSON response into Pydantic model
+                json_str = response.choices[0].message.content
+                return response_model.model_validate_json(json_str)
+                
+            elif self.provider == LLMProvider.ANTHROPIC:
+                # For Anthropic, generate schema and request JSON
+                schema = response_model.model_json_schema()
+                json_prompt = f"{prompt}\n\nRespond with valid JSON matching this schema:\n{json.dumps(schema, indent=2)}"
+                
+                response_text = await self.generate_completion(
+                    prompt=json_prompt,
+                    system_prompt=system_prompt or "You are a helpful assistant that always responds with valid JSON.",
+                    temperature=temperature,
+                    max_tokens=max_tokens
+                )
+                
+                # Parse into Pydantic model
+                return response_model.model_validate_json(response_text)
+            else:
+                raise NotImplementedError(f"Pydantic output not implemented for {self.provider}")
+                
+        except Exception as e:
+            self.logger.error(
+                f"Failed to generate Pydantic output for model {self.model}: {str(e)}",
+                extra={
+                    "model": self.model,
+                    "provider": self.provider.value,
+                    "response_model": response_model.__name__,
+                    "prompt_length": len(prompt),
+                    "error_type": type(e).__name__
+                }
+            )
+            raise LLMResponseError(
+                f"Failed to generate structured output with {response_model.__name__}: {str(e)}"
+            ) from e
 
     async def batch_generate(self, prompts: list[str]) -> list[str]:
         """Generate completions for multiple prompts.

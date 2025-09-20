@@ -3,9 +3,13 @@
 import json
 import logging
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Type, TypeVar
 
+from pydantic import BaseModel
 from src.models.documents import TDDSections, PRDSections
+
+# Type variable for Pydantic models
+T = TypeVar('T', bound=BaseModel)
 
 
 logger = logging.getLogger(__name__)
@@ -392,3 +396,112 @@ Process each item and provide results."""
         # Truncate with indicator
         truncated = content[:max_chars - 100]
         return f"{truncated}... [Content truncated to fit token limit]"
+
+    def build_pydantic_prompt(self,
+                            instruction: str,
+                            model_class: Type[T],
+                            context: dict[str, Any] | None = None) -> str:
+        """Build prompt optimized for Pydantic model output.
+        
+        Args:
+            instruction: Main instruction/task
+            model_class: Pydantic model class for output
+            context: Optional context dictionary
+            
+        Returns:
+            Formatted prompt
+        """
+        prompt_parts = [instruction]
+        
+        if context:
+            prompt_parts.append("\nContext:")
+            for key, value in context.items():
+                prompt_parts.append(f"- {key}: {value}")
+        
+        # Add field descriptions from the model
+        if hasattr(model_class, 'model_fields'):
+            prompt_parts.append("\nPlease provide the following information:")
+            for field_name, field_info in model_class.model_fields.items():
+                if field_info.description:
+                    prompt_parts.append(f"- {field_name}: {field_info.description}")
+        
+        return "\n".join(prompt_parts)
+
+    def build_task_extraction_pydantic_prompt(self,
+                                             document_type: str,
+                                             sections: TDDSections | PRDSections) -> str:
+        """Build prompt for task extraction using Pydantic models.
+        
+        Args:
+            document_type: Type of document (TDD/PRD)
+            sections: Document sections
+            
+        Returns:
+            Formatted prompt
+        """
+        content_parts = []
+        
+        if isinstance(sections, TDDSections):
+            if sections.overview:
+                content_parts.append(f"Overview:\n{sections.overview}\n")
+            if sections.test_cases:
+                content_parts.append(f"Design Elements:\n" + "\n".join(f"- {tc}" for tc in sections.test_cases) + "\n")
+            if sections.implementation_requirements:
+                content_parts.append(f"Implementation Requirements:\n" + "\n".join(f"- {req}" for req in sections.implementation_requirements) + "\n")
+            if sections.acceptance_criteria:
+                content_parts.append(f"Acceptance Criteria:\n" + "\n".join(f"- {ac}" for ac in sections.acceptance_criteria) + "\n")
+                
+        elif isinstance(sections, PRDSections):
+            if sections.executive_summary:
+                content_parts.append(f"Executive Summary:\n{sections.executive_summary}\n")
+            if sections.features:
+                content_parts.append("Features:\n")
+                for feature in sections.features:
+                    content_parts.append(f"- {feature['name']}")
+                    if feature.get('requirements'):
+                        for req in feature['requirements']:
+                            content_parts.append(f"  - {req}")
+                content_parts.append("")
+            if sections.user_stories:
+                content_parts.append(f"User Stories:\n" + "\n".join(f"- {story}" for story in sections.user_stories) + "\n")
+        
+        content = "\n".join(content_parts)
+        
+        return f"""Analyze the following {document_type} document and extract all actionable tasks.
+
+{content}
+
+Extract comprehensive tasks with:
+- Clear, actionable titles
+- Detailed descriptions
+- Appropriate task types and priorities
+- Dependencies between tasks
+- Testable acceptance criteria
+- Technical requirements where applicable
+
+Ensure each task is complete and actionable."""
+
+    def get_pydantic_system_prompt(self, context: str, model_class: Type[T] | None = None) -> str:
+        """Get system prompt optimized for Pydantic model generation.
+        
+        Args:
+            context: Context identifier
+            model_class: Optional Pydantic model class
+            
+        Returns:
+            System prompt
+        """
+        base_prompts = {
+            "task_extraction": "You are an expert software project manager skilled at breaking down requirements into actionable, well-structured tasks.",
+            "issue_generation": "You are an expert software project manager creating detailed, actionable issues with comprehensive information.",
+            "priority_analysis": "You are a senior technical lead experienced in prioritizing tasks based on business value and technical dependencies.",
+            "technical_review": "You are a principal software architect with expertise in system design and technical analysis.",
+            "default": "You are a helpful AI assistant specialized in software development and project management."
+        }
+        
+        prompt = base_prompts.get(context, base_prompts["default"])
+        
+        if model_class:
+            prompt += f" Always structure your responses according to the provided format specifications."
+        
+        return prompt
