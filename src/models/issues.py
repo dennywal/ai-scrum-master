@@ -1,7 +1,7 @@
 """GitHub issue-related data models for AI Scrum Master."""
 
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Optional, List
 
 from pydantic import BaseModel, Field, HttpUrl, field_validator
 
@@ -14,6 +14,10 @@ class GeneratedIssueContent(BaseModel):
     labels_to_apply: list[str] = Field(default_factory=list, description="Labels to apply to the issue")
     suggested_assignees: list[str] = Field(default_factory=list, description="Suggested assignees")
     suggested_milestone: str | None = Field(None, description="Suggested milestone")
+    priority: Optional[str] = Field("medium", description="Issue priority")
+    issue_type: Optional[str] = Field("feature", description="Type of issue")
+    estimated_hours: Optional[float] = Field(None, description="Estimated hours")
+    acceptance_criteria: Optional[list[str]] = Field(default_factory=list, description="Acceptance criteria")
 
     @field_validator('generated_title')
     @classmethod
@@ -182,3 +186,123 @@ class IssueUpdateRequest(BaseModel):
             self.add_assignees, self.remove_assignees, self.milestone
         ]
         return any(field is not None for field in update_fields)
+
+
+# Structured output models for LLM issue generation
+class IssueGenerationOutput(BaseModel):
+    """Structured output for LLM issue generation using OpenAI Responses API."""
+    
+    title: str = Field(
+        ..., 
+        min_length=1, 
+        max_length=100,
+        description="Concise, descriptive issue title"
+    )
+    
+    body: str = Field(
+        ...,
+        min_length=10,
+        description="Detailed issue description in Markdown format"
+    )
+    
+    acceptance_criteria: List[str] = Field(
+        default_factory=list,
+        description="Specific, testable acceptance criteria"
+    )
+    
+    priority: str = Field(
+        default="medium",
+        pattern="^(critical|high|medium|low)$",
+        description="Issue priority level"
+    )
+    
+    issue_type: str = Field(
+        default="feature",
+        pattern="^(bug|feature|enhancement|task|documentation)$",
+        description="Type of issue"
+    )
+    
+    labels: List[str] = Field(
+        default_factory=list,
+        max_items=10,
+        description="Relevant labels for the issue"
+    )
+    
+    estimated_hours: Optional[float] = Field(
+        None,
+        ge=0.5,
+        le=160,
+        description="Estimated effort in hours"
+    )
+    
+    components: List[str] = Field(
+        default_factory=list,
+        description="Affected components or modules"
+    )
+    
+    dependencies: List[str] = Field(
+        default_factory=list,
+        description="Blocking issues or prerequisites"
+    )
+    
+    technical_approach: Optional[str] = Field(
+        None,
+        description="Suggested technical approach or implementation ideas"
+    )
+    
+    @field_validator('title')
+    @classmethod
+    def validate_title_content(cls, v):
+        """Ensure title is meaningful."""
+        if len(v.split()) < 2:
+            raise ValueError("Title must contain at least 2 words")
+        return v.strip()
+    
+    @field_validator('labels')
+    @classmethod
+    def clean_labels(cls, v):
+        """Clean and validate labels."""
+        # Remove empty strings and duplicates
+        cleaned = [label.strip().lower().replace(' ', '-') for label in v if label.strip()]
+        return list(set(cleaned))
+    
+    def to_generated_content(self) -> GeneratedIssueContent:
+        """Convert to GeneratedIssueContent for backward compatibility."""
+        # Build the full issue body with all sections
+        body_sections = [self.body]
+        
+        # Add acceptance criteria section
+        if self.acceptance_criteria:
+            body_sections.append("\n## Acceptance Criteria\n")
+            for criterion in self.acceptance_criteria:
+                body_sections.append(f"- [ ] {criterion}")
+        
+        # Add technical details
+        if self.components or self.dependencies or self.technical_approach:
+            body_sections.append("\n## Technical Details\n")
+            if self.components:
+                body_sections.append(f"**Affected Components:** {', '.join(self.components)}")
+            if self.dependencies:
+                body_sections.append(f"**Dependencies:** {', '.join(self.dependencies)}")
+            if self.technical_approach:
+                body_sections.append(f"\n**Suggested Approach:**\n{self.technical_approach}")
+        
+        # Add metadata section
+        body_sections.append("\n## Metadata\n")
+        body_sections.append(f"- **Priority:** {self.priority}")
+        body_sections.append(f"- **Type:** {self.issue_type}")
+        if self.estimated_hours:
+            body_sections.append(f"- **Estimated Effort:** {self.estimated_hours} hours")
+        
+        # Combine all sections
+        full_body = '\n'.join(body_sections)
+        
+        return GeneratedIssueContent(
+            generated_title=self.title,
+            generated_body=full_body,
+            labels_to_apply=self.labels,
+            priority=self.priority,
+            issue_type=self.issue_type,
+            estimated_hours=self.estimated_hours,
+            acceptance_criteria=self.acceptance_criteria
+        )
