@@ -129,11 +129,17 @@ class LLMClient:
                     else:
                         raise
                 
-                # Extract content and handle None/empty responses
-                content = response.choices[0].message.content if response.choices else None
-                if not content:
-                    logger.warning(f"Empty response from LLM for prompt: {prompt[:100]}...")
-                    raise LLMResponseError("LLM returned empty response")
+                # Extract content from response
+                if not response.choices:
+                    logger.warning(f"No choices in LLM response for prompt: {prompt[:100]}...")
+                    raise LLMResponseError("LLM returned no choices in response")
+                    
+                content = response.choices[0].message.content
+                # Only warn if content is None (not just empty string)
+                if content is None:
+                    logger.warning(f"None content from LLM for prompt: {prompt[:100]}...")
+                    # Return empty string instead of raising error for backward compatibility
+                    return ""
                     
                 return content
                 
