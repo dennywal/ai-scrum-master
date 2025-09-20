@@ -108,12 +108,15 @@ class LLMClient:
                 
                 # Always use Chat Completions API
                 # Use max_completion_tokens for newer models, max_tokens for older ones
+                # GPT-5-nano only supports temperature=1.0
+                api_temperature = 1.0 if "gpt-5-nano" in self.model else temperature
+                
                 try:
                     # Try with max_completion_tokens first (for newer models)
                     response = self.client.chat.completions.create(
                         model=self.model,
                         messages=messages,
-                        temperature=temperature,
+                        temperature=api_temperature,
                         max_completion_tokens=max_tokens,
                         response_format={"type": "text"}  # Ensure text response
                     )
@@ -123,7 +126,7 @@ class LLMClient:
                         response = self.client.chat.completions.create(
                             model=self.model,
                             messages=messages,
-                            temperature=temperature,
+                            temperature=api_temperature,  # Use the same adjusted temperature
                             max_tokens=max_tokens
                         )
                     else:
@@ -275,12 +278,16 @@ class LLMClient:
                             }
                         )
                         
+                        # GPT-5-nano only supports temperature=1.0
+                        api_temperature = 1.0 if "gpt-5-nano" in self.model else temperature
+                        
+                        # Responses API doesn't accept max_tokens or max_completion_tokens
                         response = self.client.responses.parse(
                             model=self.model,
                             input=messages,  # Note: using 'input' instead of 'messages'
                             text_format=response_model,  # Pass the Pydantic model directly
-                            temperature=temperature,
-                            max_tokens=max_tokens
+                            temperature=api_temperature
+                            # Note: No max_tokens parameter - Responses API handles this automatically
                         )
                         
                         # The response should have an output_parsed attribute
@@ -311,12 +318,13 @@ class LLMClient:
                 if supports_json_schema:
                     # Models that support structured output with JSON schema
                     self.logger.debug(f"Using JSON schema structured output for {self.model}")
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format={
+                    
+                    # Use appropriate parameter based on model
+                    completion_params = {
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "response_format": {
                             "type": "json_schema",
                             "json_schema": {
                                 "name": response_model.__name__,
@@ -324,7 +332,18 @@ class LLMClient:
                                 "strict": True
                             }
                         }
-                    )
+                    }
+                    
+                    # GPT-5 models use max_completion_tokens
+                    if "gpt-5" in self.model:
+                        completion_params["max_completion_tokens"] = max_tokens
+                        # GPT-5-nano only supports temperature=1.0
+                        if "gpt-5-nano" in self.model:
+                            completion_params["temperature"] = 1.0
+                    else:
+                        completion_params["max_tokens"] = max_tokens
+                    
+                    response = self.client.chat.completions.create(**completion_params)
                 else:
                     # Older models - use JSON mode with schema in prompt
                     self.logger.debug(f"Using JSON mode with schema in prompt for {self.model}")
@@ -337,13 +356,24 @@ class LLMClient:
                     )
                     messages.append({"role": "system", "content": schema_prompt})
                     
-                    response = self.client.chat.completions.create(
-                        model=self.model,
-                        messages=messages,
-                        temperature=temperature,
-                        max_tokens=max_tokens,
-                        response_format={"type": "json_object"}
-                    )
+                    # Build parameters based on model type
+                    completion_params = {
+                        "model": self.model,
+                        "messages": messages,
+                        "temperature": temperature,
+                        "response_format": {"type": "json_object"}
+                    }
+                    
+                    # GPT-5 models use max_completion_tokens
+                    if "gpt-5" in self.model:
+                        completion_params["max_completion_tokens"] = max_tokens
+                        # GPT-5-nano only supports temperature=1.0
+                        if "gpt-5-nano" in self.model:
+                            completion_params["temperature"] = 1.0
+                    else:
+                        completion_params["max_tokens"] = max_tokens
+                    
+                    response = self.client.chat.completions.create(**completion_params)
                 
                 # Parse the JSON response into Pydantic model
                 json_str = response.choices[0].message.content
